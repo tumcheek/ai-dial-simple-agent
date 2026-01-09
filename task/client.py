@@ -34,14 +34,7 @@ class DialClient:
         if tools:
             for tool in tools:
                 self.__tools_dict[tool.name] = tool
-                tool_schema = {
-                    "type": "function",
-                    "function": {
-                        "name": tool.name,
-                        "description": tool.description,
-                        "parameters": tool.input_schema
-                    }
-                }
+                tool_schema = tool.schema
                 self._tools.append(tool_schema)
         print(f"DialClient initialized with endpoint: {self.__endpoint}")
 
@@ -117,8 +110,9 @@ class DialClient:
                 tool_messages = self._process_tool_calls(tool_calls)
                 messages.extend(tool_messages)
                 return self.get_completion(messages, print_request)
-            else:
-                raise Exception(f"HTTP {response.status_code}: {response.text}")
+            return ai_response
+        else:
+            raise Exception(f"HTTP {response.status_code}: {response.text}")
 
 
     def _process_tool_calls(self, tool_calls: list[dict[str, Any]]) -> list[Message]:
