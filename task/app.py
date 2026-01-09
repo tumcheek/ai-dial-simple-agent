@@ -26,7 +26,28 @@ def main():
     #    - Add User message to Conversation
     #    - Call DialClient with conversation history
     #    - Add Assistant message to Conversation and print its content
-    raise NotImplementedError()
+    user_client = UserClient()
+    dial_client = DialClient(
+        endpoint=DIAL_ENDPOINT,
+        deployment_name="gpt-4",
+        api_key=API_KEY,
+        tools=[
+            WebSearchTool(api_key=API_KEY, endpoint=DIAL_ENDPOINT),
+            GetUserByIdTool(user_client),
+            SearchUsersTool(user_client),
+            CreateUserTool(user_client),
+            UpdateUserTool(user_client),
+            DeleteUserTool(user_client)
+        ]
+    )
+    conversation = Conversation()
+    conversation.add_message(Message(role=Role.SYSTEM, content=SYSTEM_PROMPT))
+    while True:
+        user_input = input("> ").strip()
+        conversation.add_message(Message(role=Role.USER, content=user_input))
+        response_message = dial_client.get_completion(conversation.messages)
+        conversation.add_message(response_message)
+        print(response_message.content)
 
 
 main()
