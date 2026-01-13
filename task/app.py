@@ -1,3 +1,4 @@
+import asyncio
 import os
 
 from task.client import DialClient
@@ -16,7 +17,10 @@ from task.tools.web_search import WebSearchTool
 DIAL_ENDPOINT = "https://ai-proxy.lab.epam.com"
 API_KEY = os.getenv('DIAL_API_KEY')
 
-def main():
+def to_console(chunk: str):
+    print(chunk, end="", flush=True)
+
+async def main():
     #TODO:
     # 1. Create UserClient
     # 2. Create DialClient with all tools (WebSearchTool, GetUserByIdTool, SearchUsersTool, CreateUserTool, UpdateUserTool, DeleteUserTool)
@@ -42,15 +46,27 @@ def main():
     )
     conversation = Conversation()
     conversation.add_message(Message(role=Role.SYSTEM, content=SYSTEM_PROMPT))
+    response_mode = input("Choose response mode (1 - streaming, 2 - regular) - ").strip()
     while True:
         user_input = input("> ").strip()
         conversation.add_message(Message(role=Role.USER, content=user_input))
-        response_message = dial_client.get_completion(conversation.messages)
-        conversation.add_message(response_message)
-        print(response_message.content)
+        if response_mode == "1":
+            async for ev in dial_client.stream_completion_gen(conversation.messages):
+                if isinstance(ev, Message):
+                    conversation.add_message(ev)
+                if isinstance(ev, str):
+                    print(ev, end="", flush=True)
+            # response_message = await dial_client.stream_completion(conversation.messages, to_console)
+            # conversation.add_message(response_message)
+        else:
+            response_message = dial_client.get_completion(conversation.messages, print_request=True)
+            conversation.add_message(response_message)
+            print(response_message.content)
 
 
-main()
+asyncio.run(
+    main()
+)
 
 #TODO:
 # Request sample:

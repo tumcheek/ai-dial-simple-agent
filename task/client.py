@@ -1,12 +1,15 @@
 import json
-from typing import Any
+from collections.abc import Callable
+from typing import Any, AsyncIterator, Union
 
 import requests
+import aiohttp
 
 from task.models.message import Message
 from task.models.role import Role
 from task.tools.base import BaseTool
 
+StreamEvent = Union[str, Message]
 
 class DialClient:
 
@@ -114,6 +117,131 @@ class DialClient:
         else:
             raise Exception(f"HTTP {response.status_code}: {response.text}")
 
+    async def stream_completion(self, messages: list[Message], on_chunk: Callable[[str], None]) -> Message:
+        headers = {
+            "api-key": self.__api_key,
+            "Content-Type": "application/json"
+        }
+        request_data = {
+            "stream": True,
+            "messages": [msg.to_dict() for msg in messages],
+            "tools": self._tools
+        }
+
+        contents = []
+        final_tool_calls = {}
+        # NOTE:
+        # In this educational version, a new aiohttp.ClientSession is created inside
+        # each call to stream_completion / stream_completion_gen, including recursive
+        # tool-loop iterations.
+        #
+        # This is done intentionally to keep the code simple while learning how
+        # streaming and tool-calling work.
+        #
+        # In a production version, the session should be created once (per agent run
+        # or per client) and reused across all LLM calls, to avoid creating a new
+        # TCP/TLS connection on every tool iteration.
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                url=self.__endpoint,
+                headers=headers,
+                json=request_data
+            ) as response:
+                if response.status == 200:
+                    async for line in response.content:
+                        if line.startswith(b'data: '):
+                            data = line[len(b'data: '):].strip()
+                            if data == b'[DONE]':
+                                break
+                            chunk = json.loads(data)
+                            delta = chunk.get("choices", [])[0].get("delta", {})
+
+                            content = delta.get('content', '')
+                            if content:
+                                on_chunk(content)
+                                contents.append(content)
+
+                            for tool_call in delta.get('tool_calls') or []:
+                                index = tool_call.get('index')
+
+                                if index not in final_tool_calls:
+                                    final_tool_calls[index] = tool_call
+                                    final_tool_calls[index].setdefault("function", {}).setdefault("arguments", "")
+                                final_tool_calls[index]["function"]["arguments"] += tool_call.get('function', {}).get('arguments', '')
+                    ai_response = Message(role=Role.AI, content=''.join(contents), tool_calls=list(final_tool_calls.values()))
+                    messages.append(ai_response)
+                    if final_tool_calls:
+                        tool_messages = self._process_tool_calls(list(final_tool_calls.values()))
+                        messages.extend(tool_messages)
+                        return await self.stream_completion(messages, on_chunk)
+                    return ai_response
+                else:
+                    raise Exception(f"HTTP {response.status}: {await response.text()}")
+
+    async def stream_completion_gen(self, messages: list[Message]) -> AsyncIterator[StreamEvent]:
+        headers = {
+            "api-key": self.__api_key,
+            "Content-Type": "application/json"
+        }
+        request_data = {
+            "stream": True,
+            "messages": [msg.to_dict() for msg in messages],
+            "tools": self._tools
+        }
+
+        contents = []
+        final_tool_calls = {}
+        # NOTE:
+        # In this educational version, a new aiohttp.ClientSession is created inside
+        # each call to stream_completion / stream_completion_gen, including recursive
+        # tool-loop iterations.
+        #
+        # This is done intentionally to keep the code simple while learning how
+        # streaming and tool-calling work.
+        #
+        # In a production version, the session should be created once (per agent run
+        # or per client) and reused across all LLM calls, to avoid creating a new
+        # TCP/TLS connection on every tool iteration.
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                    url=self.__endpoint,
+                    headers=headers,
+                    json=request_data
+            ) as response:
+                if response.status == 200:
+                    async for line in response.content:
+                        if line.startswith(b'data: '):
+                            data = line[len(b'data: '):].strip()
+                            if data == b'[DONE]':
+                                break
+                            chunk = json.loads(data)
+                            delta = chunk.get("choices", [])[0].get("delta", {})
+
+                            content = delta.get('content', '')
+                            if content:
+                                contents.append(content)
+                                yield content
+
+                            for tool_call in delta.get('tool_calls') or []:
+                                index = tool_call.get('index')
+
+                                if index not in final_tool_calls:
+                                    final_tool_calls[index] = tool_call
+                                    final_tool_calls[index].setdefault("function", {}).setdefault("arguments", "")
+                                final_tool_calls[index]["function"]["arguments"] += tool_call.get('function', {}).get(
+                                    'arguments', '')
+                    ai_response = Message(role=Role.AI, content=''.join(contents),
+                                          tool_calls=list(final_tool_calls.values()))
+                    messages.append(ai_response)
+                    if final_tool_calls:
+                        tool_messages = self._process_tool_calls(list(final_tool_calls.values()))
+                        messages.extend(tool_messages)
+                        async for chunk in self.stream_completion_gen(messages):
+                            yield chunk
+                        return
+                    yield ai_response
+                else:
+                    raise Exception(f"HTTP {response.status}: {await response.text()}")
 
     def _process_tool_calls(self, tool_calls: list[dict[str, Any]]) -> list[Message]:
         """Process tool calls and add results to messages."""
